@@ -53,7 +53,7 @@ func (r *roaResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *
 				Optional:    true,
 				Computed:    true,
 				Default:     booldefault.StaticBool(false),
-				Description: "Create and maintain matching IRR route/route6 objects. ARIN does not report this back, so imported resources show the default.",
+				Description: "Create and maintain matching IRR route/route6 objects. ARIN does not report this back, so imported resources show the default. An update that keeps auto_link, keeps the origin and only adds prefixes leaves the existing route objects in place for the reissued ROA to relink. Any other update, and a destroy, deletes them with the old ROA.",
 			},
 			"auto_renewed": schema.BoolAttribute{
 				Computed:      true,
@@ -242,7 +242,7 @@ func (r *roaResource) Update(ctx context.Context, req resource.UpdateRequest, re
 	delete(before, old)
 	tx := arin.Transaction{
 		ROADeletes: &arin.ROADeletes{Handles: []arin.ROAHandleRef{{
-			AutoLink: state.AutoLink.ValueBool(),
+			AutoLink: state.AutoLink.ValueBool() && !keepsLinks(&state, &plan),
 			Handle:   old,
 		}}},
 		ROAAdds: &arin.ROAAdds{Specs: []arin.ROASpecRequest{plan.spec()}},

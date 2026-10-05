@@ -3,11 +3,13 @@ package provider_test
 import (
 	"fmt"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 
+	"github.com/stepbrobd/terraform-provider-arin/arin"
 	"github.com/stepbrobd/terraform-provider-arin/arin/arintest"
 )
 
@@ -161,6 +163,91 @@ resource "arin_roa" "multi" {
 					resource.TestCheckResourceAttr("arin_roa.multi", "resources.1.end_address", "192.0.2.255"),
 					resource.TestCheckNoResourceAttr("arin_roa.multi", "resources.0.max_length"),
 					resource.TestCheckNoResourceAttr("arin_roa.multi", "resources.1.max_length"),
+				),
+			},
+		},
+	})
+}
+
+func TestAccROAKeepsLinkedRoutes(t *testing.T) {
+	srv := arintest.New(t, "TESTKEY", "TESTORG")
+	roa := func(prefixes ...string) string {
+		var rs []string
+		for _, p := range prefixes {
+			rs = append(rs, fmt.Sprintf("{\n    start_address = %q\n    cidr_length   = 24\n  }", p))
+		}
+		return providerConfig(srv.URL) + fmt.Sprintf(`
+resource "arin_roa" "links" {
+  as_number = 64496
+  name      = "links"
+  auto_link = true
+  resources = [%s]
+}
+`, strings.Join(rs, ", "))
+	}
+	linked := func(prefix string) resource.TestCheckFunc {
+		return func(s *terraform.State) error {
+			h := s.RootModule().Resources["arin_roa.links"].Primary.Attributes["roa_handle"]
+			r, ok := srv.Route(prefix, "AS64496")
+			if !ok {
+				return fmt.Errorf("no route object for %s", prefix)
+			}
+			if r.AutoLinkedRoaHandle != h {
+				return fmt.Errorf("route %s linked to %q, roa is %q", prefix, r.AutoLinkedRoaHandle, h)
+			}
+			return nil
+		}
+	}
+	var created string
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: factories(),
+		CheckDestroy: func(*terraform.State) error {
+			for _, p := range []string{"192.0.2.0/24", "198.51.100.0/24"} {
+				if _, ok := srv.Route(p, "AS64496"); ok {
+					return fmt.Errorf("route %s left behind by destroy", p)
+				}
+			}
+			return nil
+		},
+		Steps: []resource.TestStep{
+			{
+				Config: roa("192.0.2.0"),
+				Check:  linked("192.0.2.0/24"),
+			},
+			{
+				// stands in for an attribute set by hand on the route object,
+				// such as member-of, which only lives as long as the object
+				PreConfig: func() {
+					r, _ := srv.Route("192.0.2.0/24", "AS64496")
+					r.MemberOf = []arin.NameRef{{Name: "RS-TEST"}}
+					srv.InjectRoute(r)
+					created = r.Created
+				},
+				// adding a prefix reissues the roa and must leave the existing route object in place
+				Config: roa("192.0.2.0", "198.51.100.0"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					linked("192.0.2.0/24"),
+					linked("198.51.100.0/24"),
+					func(*terraform.State) error {
+						r, _ := srv.Route("192.0.2.0/24", "AS64496")
+						if r.Created != created || len(r.MemberOf) != 1 {
+							return fmt.Errorf("route object recreated by an update that only adds a prefix, %+v", r)
+						}
+						return nil
+					},
+				),
+			},
+			{
+				// dropping a prefix takes its route object with it
+				Config: roa("198.51.100.0"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					linked("198.51.100.0/24"),
+					func(*terraform.State) error {
+						if r, ok := srv.Route("192.0.2.0/24", "AS64496"); ok {
+							return fmt.Errorf("route object of a dropped prefix survived, %+v", r)
+						}
+						return nil
+					},
 				),
 			},
 		},

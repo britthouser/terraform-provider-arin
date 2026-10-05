@@ -120,6 +120,32 @@ outer:
 	return true
 }
 
+// keepsLinks reports whether a reissue from state to plan can leave the
+// auto-linked irr route objects of the old roa for the new one to relink
+// arin deletes them along with a roa unless the delete opts out, so an
+// update that only adds prefixes would otherwise delete and recreate every
+// route object the roa already maintains
+// a dropped prefix or a new origin still needs the delete to clean up
+func keepsLinks(state, plan *roaModel) bool {
+	if !state.AutoLink.ValueBool() || !plan.AutoLink.ValueBool() {
+		return false
+	}
+	if state.ASNumber.ValueInt64() != plan.ASNumber.ValueInt64() {
+		return false
+	}
+outer:
+	for _, old := range state.Resources {
+		for _, r := range plan.Resources {
+			if sameAddr(old.StartAddress.ValueString(), r.StartAddress.ValueString()) &&
+				old.CIDRLength.ValueInt64() == r.CIDRLength.ValueInt64() {
+				continue outer
+			}
+		}
+		return false
+	}
+	return true
+}
+
 // errSettleNoMatch reports a listing that does not yet show the new
 // roa, which can be the listing lagging the transaction
 var errSettleNoMatch = errors.New("transaction succeeded but no new roa matches the configuration")

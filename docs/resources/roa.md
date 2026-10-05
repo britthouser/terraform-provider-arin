@@ -25,7 +25,10 @@ delete+add ARIN transaction and reissue the ROA under a new handle.
 ### Optional
 
 - `auto_link` (Boolean) Create and maintain matching IRR route/route6 objects.
-  ARIN does not report this back, so imported resources show the default.
+  ARIN does not report this back, so imported resources show the default. An
+  update that keeps auto_link, keeps the origin and only adds prefixes leaves
+  the existing route objects in place for the reissued ROA to relink. Any other
+  update, and a destroy, deletes them with the old ROA.
 
 ### Read-Only
 
