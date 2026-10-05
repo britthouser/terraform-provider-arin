@@ -73,7 +73,11 @@ TF_ACC=1 go test ./provider/ -v
 ```
 
 Updates to a ROA run as one atomic delete+add transaction on ARIN's side and
-reissue the ROA under a new `roa_handle`.
+reissue the ROA under a new `roa_handle`. ARIN deletes the IRR route objects an
+`auto_link` ROA maintains together with the ROA unless the delete opts out. An
+update that keeps `auto_link` and the origin and only adds prefixes opts out, so
+the existing route objects stay in place and the reissued ROA relinks them. Any
+other update, and a destroy, deletes them with the old ROA.
 
 IRR route objects that ARIN maintains for `auto_link` ROAs are refused by
 `arin_irr_route`; manage those through the ROA.
