@@ -166,6 +166,7 @@ func (s *Server) transact(w http.ResponseWriter, r *http.Request) {
 	}
 	if tx.ROADeletes != nil {
 		for _, h := range tx.ROADeletes.Handles {
+			s.unlinkRoutes(h.Handle, h.AutoLink)
 			delete(s.roas, h.Handle)
 		}
 	}
@@ -176,6 +177,7 @@ func (s *Server) transact(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, a := range adds {
 		s.roas[a.Handle] = a
+		s.linkRoutes(a)
 	}
 	if tx.ASPAAdds != nil {
 		for _, a := range tx.ASPAAdds.ASPAs {

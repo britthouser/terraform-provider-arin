@@ -108,3 +108,86 @@ func TestAuth(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestAutoLinkRoutes(t *testing.T) {
+	ctx := context.Background()
+	srv := New(t, "KEY", "ORG")
+	c, err := arin.New(srv.URL, "KEY", "ORG")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := func(prefixes ...string) arin.ROASpecRequest {
+		out := arin.ROASpecRequest{AutoLink: true, ASNumber: 64496, Name: "links"}
+		for _, p := range prefixes {
+			out.Resources = append(out.Resources, arin.ROAResourceRequest{StartAddress: p, CIDRLength: 24})
+		}
+		return out
+	}
+	handle := func() string {
+		roas, err := c.ROAs(ctx)
+		if err != nil || len(roas) != 1 {
+			t.Fatalf("roas = %+v err = %v", roas, err)
+		}
+		return roas[0].Handle
+	}
+
+	if err := c.Transact(ctx, arin.Transaction{ROAAdds: &arin.ROAAdds{Specs: []arin.ROASpecRequest{spec("192.0.2.0")}}}); err != nil {
+		t.Fatal(err)
+	}
+	first := handle()
+	r, ok := srv.Route("192.0.2.0/24", "AS64496")
+	if !ok || r.AutoLinkedRoaHandle != first {
+		t.Fatalf("auto-link did not create a linked route, %+v", r)
+	}
+	// stands in for an attribute set by hand, which only lives as long as the object
+	r.MemberOf = []arin.NameRef{{Name: "RS-TEST"}}
+	srv.InjectRoute(r)
+
+	// a reissue whose delete opts out keeps the route object and relinks it
+	if err := c.Transact(ctx, arin.Transaction{
+		ROADeletes: &arin.ROADeletes{Handles: []arin.ROAHandleRef{{AutoLink: false, Handle: first}}},
+		ROAAdds:    &arin.ROAAdds{Specs: []arin.ROASpecRequest{spec("192.0.2.0", "198.51.100.0")}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	second := handle()
+	kept, ok := srv.Route("192.0.2.0/24", "AS64496")
+	if !ok || kept.AutoLinkedRoaHandle != second || kept.Created != r.Created || len(kept.MemberOf) != 1 {
+		t.Fatalf("route not kept in place across the reissue, %+v", kept)
+	}
+	if added, ok := srv.Route("198.51.100.0/24", "AS64496"); !ok || added.AutoLinkedRoaHandle != second {
+		t.Fatalf("added prefix not linked, %+v", added)
+	}
+
+	// a reissue whose delete carries autoLink recreates the route object
+	if err := c.Transact(ctx, arin.Transaction{
+		ROADeletes: &arin.ROADeletes{Handles: []arin.ROAHandleRef{{AutoLink: true, Handle: second}}},
+		ROAAdds:    &arin.ROAAdds{Specs: []arin.ROASpecRequest{spec("192.0.2.0", "198.51.100.0")}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	third := handle()
+	recreated, ok := srv.Route("192.0.2.0/24", "AS64496")
+	if !ok || recreated.AutoLinkedRoaHandle != third || recreated.Created == r.Created || len(recreated.MemberOf) != 0 {
+		t.Fatalf("route not recreated by the deleting reissue, %+v", recreated)
+	}
+
+	// a plain delete that opts out leaves unmanaged route objects behind
+	if err := c.Transact(ctx, arin.Transaction{ROADeletes: &arin.ROADeletes{Handles: []arin.ROAHandleRef{{AutoLink: false, Handle: third}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if left, ok := srv.Route("198.51.100.0/24", "AS64496"); !ok || left.AutoLinkedRoaHandle != "" {
+		t.Fatalf("opted out delete did not leave an unmanaged route, %+v", left)
+	}
+
+	// a delete that carries autoLink takes the linked route objects with it
+	if err := c.Transact(ctx, arin.Transaction{ROAAdds: &arin.ROAAdds{Specs: []arin.ROASpecRequest{spec("203.0.113.0")}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Transact(ctx, arin.Transaction{ROADeletes: &arin.ROADeletes{Handles: []arin.ROAHandleRef{{AutoLink: true, Handle: handle()}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if gone, ok := srv.Route("203.0.113.0/24", "AS64496"); ok {
+		t.Fatalf("deleting delete left a route behind, %+v", gone)
+	}
+}

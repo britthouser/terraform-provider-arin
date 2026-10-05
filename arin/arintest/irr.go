@@ -43,6 +43,59 @@ func (s *Server) InjectRoute(r arin.IRRRoute) {
 	s.irrRoutes[routeKey(r.Prefix, r.OriginAS)] = s.stampRoute(r)
 }
 
+// Route returns the stored route object for prefix and origin
+func (s *Server) Route(prefix, origin string) (arin.IRRRoute, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.irrRoutes[routeKey(prefix, origin)]
+	return r, ok
+}
+
+// linkRoutes mirrors arin's auto-link on roa creation, every resource gets a
+// route object for the roa's origin and an existing object is adopted in place
+// objects it creates carry only what arin fills in, no description or member-of
+func (s *Server) linkRoutes(roa arin.ROASpec) {
+	origin := fmt.Sprintf("AS%d", roa.ASNumber)
+	for _, rr := range roa.Resources {
+		if !rr.AutoLinked {
+			continue
+		}
+		prefix := fmt.Sprintf("%s/%d", unpad(rr.StartAddress), rr.CIDRLength)
+		key := routeKey(prefix, origin)
+		r, ok := s.irrRoutes[key]
+		if !ok {
+			s.irrRev++
+			r = arin.IRRRoute{
+				Prefix:   prefix,
+				OriginAS: origin,
+				// distinct per creation so tests can tell a recreated object apart
+				Created: fmt.Sprintf("2026-01-02T00:00:00.%06dZ", s.irrRev),
+			}
+		}
+		r.AutoLinkedRoaHandle = roa.Handle
+		r.Remarks = arin.MakeLines([]string{"This object is automatically managed by ARIN"})
+		s.irrRoutes[key] = s.stampRoute(r)
+	}
+}
+
+// unlinkRoutes mirrors arin's roa deletion, the route objects the roa
+// maintains are deleted with it unless the delete opts out with autoLink
+// false, which leaves them in place as unmanaged objects
+func (s *Server) unlinkRoutes(handle string, drop bool) {
+	for key, r := range s.irrRoutes {
+		if r.AutoLinkedRoaHandle != handle {
+			continue
+		}
+		if drop {
+			delete(s.irrRoutes, key)
+			continue
+		}
+		r.AutoLinkedRoaHandle = ""
+		r.Remarks = arin.MakeLines([]string{"This object is no longer automatically managed by ARIN"})
+		s.irrRoutes[key] = s.stampRoute(r)
+	}
+}
+
 func (s *Server) stamp() (created, modified string) {
 	s.irrRev++
 	return "2026-01-01T00:00:00Z", fmt.Sprintf("2026-01-01T00:00:%02dZ", s.irrRev%60)
