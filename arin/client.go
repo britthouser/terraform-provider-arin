@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -47,6 +48,13 @@ func New(base, key, org string) (*Client, error) {
 	return &Client{base: u, key: key, org: org, http: &http.Client{Timeout: 30 * time.Second}}, nil
 }
 
+// queryKey reports whether requests to base must carry the api key as
+// the apikey query parameter, which only ote requires
+func queryKey(base *url.URL) bool {
+	ote, err := url.Parse(OTEBaseURL)
+	return err == nil && strings.EqualFold(base.Hostname(), ote.Hostname())
+}
+
 // OrgHandle returns the org handle the client is bound to
 func (c *Client) OrgHandle() string { return c.org }
 
@@ -62,8 +70,6 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 		}
 		rd = bytes.NewReader(append([]byte(xml.Header), b...))
 	}
-	// ote only honors the legacy apikey query parameter while the
-	// production docs prefer the authorization header, so send both
 	u := c.base.JoinPath(path)
 	q := u.Query()
 	for k, vs := range query {
@@ -71,7 +77,12 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 			q.Add(k, v)
 		}
 	}
-	q.Set("apikey", c.key)
+	// ote only honors the legacy apikey query parameter, production
+	// honors the authorization header and recommends it so the key stays
+	// out of urls and server logs, so only ote gets the query parameter
+	if queryKey(c.base) {
+		q.Set("apikey", c.key)
+	}
 	u.RawQuery = q.Encode()
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), rd)
 	if err != nil {

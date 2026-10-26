@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -56,8 +57,8 @@ func TestTransactRequest(t *testing.T) {
 	if h := hdr.Get("Authorization"); h != "ApiKey KEY" {
 		t.Fatalf("authorization = %q", h)
 	}
-	if query != "KEY" {
-		t.Fatalf("apikey query param = %q", query)
+	if query != "" {
+		t.Fatalf("apikey query param = %q, want none outside ote", query)
 	}
 	if ct := hdr.Get("Content-Type"); ct != "application/xml" {
 		t.Fatalf("content-type = %q", ct)
@@ -304,5 +305,26 @@ func TestErrorUnparseable(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "http 500") {
 		t.Fatalf("error = %q", err)
+	}
+}
+
+func TestQueryKey(t *testing.T) {
+	for _, tc := range []struct {
+		base string
+		want bool
+	}{
+		{DefaultBaseURL, false},
+		{OTEBaseURL, true},
+		{"https://REG.OTE.ARIN.NET/", true},
+		{"https://reg.ote.arin.net:443", true},
+		{"http://127.0.0.1:8080", false},
+	} {
+		u, err := url.Parse(tc.base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := queryKey(u); got != tc.want {
+			t.Errorf("queryKey(%q) = %v, want %v", tc.base, got, tc.want)
+		}
 	}
 }
